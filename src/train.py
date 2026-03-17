@@ -179,7 +179,34 @@ def main() -> None:
 
     if args.print_model:
         model = get_nanopore_lora_model()
-        print(model)
+        
+        try:
+            from torchinfo import summary
+            print("\n" + "="*30 + " MODEL SUMMARY " + "="*30)
+            
+            dummy_input = torch.randn(4, 10000, dtype=torch.float32, device=model.device)
+            
+            summary(
+                model,
+                input_data=dummy_input,
+                col_names=["input_size", "output_size", "num_params", "trainable"],
+                depth=7,
+                row_settings=["var_names"]
+            )
+            print("="*75 + "\n")
+            
+        except ImportError:
+            print("[Warning] 'torchinfo' 未安装 (pip install torchinfo)。回退到原生打印：")
+            print(model)
+        except Exception as e:
+            print(f"[Warning] 结合 input_data 打印失败: {e}")
+            print("正在尝试无维度输入的纯静态打印...")
+            try:
+                summary(model, col_names=["num_params", "trainable"], depth=7)
+            except Exception as e2:
+                print(f"[Error] 静态打印也失败了: {e2}")
+                print(model)
+                
         return
 
     signals, labels = load_bonito_npy_data(
