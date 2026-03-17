@@ -73,17 +73,14 @@ def main() -> None:
     )
     parser.add_argument(
         "--chunks",
-        required=True,
         help="Path to chunks.npy (Bonito signal chunks).",
     )
     parser.add_argument(
         "--refs",
-        required=True,
         help="Path to references.npy (Bonito integer-encoded references).",
     )
     parser.add_argument(
         "--ref_lens",
-        required=True,
         help="Path to reference_lengths.npy (valid length per reference).",
     )
     parser.add_argument(
@@ -154,15 +151,37 @@ def main() -> None:
         action="store_true",
         help="Disable fp16 even if CUDA is available.",
     )
+    parser.add_argument(
+        "--print_model",
+        action="store_true",
+        help="Print model architecture and exit without training.",
+    )
     args = parser.parse_args()
+
+    if not args.print_model:
+        missing = [
+            name
+            for name, value in (
+                ("--chunks", args.chunks),
+                ("--refs", args.refs),
+                ("--ref_lens", args.ref_lens),
+            )
+            if value is None
+        ]
+        if missing:
+            parser.error(
+                "the following arguments are required: " + ", ".join(missing)
+            )
 
     print("=" * 60)
     print("Nanopore DNA Sequencing Basecaller — Training")
     print("=" * 60)
 
-    # ------------------------------------------------------------------
-    # 1. Load data
-    # ------------------------------------------------------------------
+    if args.print_model:
+        model = get_nanopore_lora_model()
+        print(model)
+        return
+
     signals, labels = load_bonito_npy_data(
         chunks_path=args.chunks,
         refs_path=args.refs,
