@@ -2,24 +2,25 @@
 
 Usage
 -----
-    python -m src.train
+    python -m src.train --chunks chunks.npy --refs references.npy --ref_lens reference_lengths.npy
 
-The script generates a small synthetic dataset (random 1-D signals and random
-ACGT sequences), builds the LoRA-augmented Wav2Vec2ForCTC model, and runs a
-short training loop via the Hugging Face ``Trainer`` API.  The final PEFT
-adapter weights are saved to ``./nanopore_lora_adapter/``.
+The script loads real Nanopore data pre-processed by Bonito, builds the
+LoRA-augmented Wav2Vec2ForCTC model, and runs a training loop via the
+Hugging Face ``Trainer`` API.  The final PEFT adapter weights are saved to
+``./nanopore_lora_adapter/``.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
-import random
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import numpy as np
 import torch
 from transformers import EvalPrediction, Trainer, TrainingArguments
 
+from .data_loader import load_bonito_npy_data
 from .dataset import DataCollatorCTCWithPadding, NanoporeDataset
 from .model import get_nanopore_lora_model
 from .utils import VOCAB, compute_metrics
@@ -28,61 +29,8 @@ from .utils import VOCAB, compute_metrics
 # Constants
 # ---------------------------------------------------------------------------
 
-NUCLEOTIDES: str = "ACGT"
-SAMPLE_RATE: int = 4_000        # Hz
-BASES_PER_SEC: int = 400        # nominal Nanopore translocation speed
-SAMPLES_PER_BASE: int = SAMPLE_RATE // BASES_PER_SEC  # = 10
-
 OUTPUT_DIR: str = "./nanopore_lora_adapter"
-
-
-# ---------------------------------------------------------------------------
-# Dummy data generation
-# ---------------------------------------------------------------------------
-
-
-def generate_dummy_data(
-    num_samples: int = 64,
-    min_bases: int = 20,
-    max_bases: int = 80,
-    rng_seed: int = 42,
-) -> Tuple[List[np.ndarray], List[str]]:
-    """Generate synthetic Nanopore signals and random DNA sequences.
-
-    Each signal is simulated as Gaussian noise (mimicking pore current
-    fluctuations) with a length proportional to the sequence length:
-    ``len(sequence) * SAMPLES_PER_BASE`` samples.
-
-    Args:
-        num_samples: Number of (signal, sequence) pairs to generate.
-        min_bases: Minimum sequence length in nucleotides.
-        max_bases: Maximum sequence length in nucleotides.
-        rng_seed: Random seed for reproducibility.
-
-    Returns:
-        Tuple of ``(signals, sequences)`` where ``signals`` is a list of 1-D
-        float32 NumPy arrays and ``sequences`` is a list of ACGT strings.
-    """
-    rng = np.random.default_rng(rng_seed)
-    random.seed(rng_seed)
-
-    signals: List[np.ndarray] = []
-    sequences: List[str] = []
-
-    for _ in range(num_samples):
-        num_bases = rng.integers(min_bases, max_bases + 1)
-        seq = "".join(random.choices(NUCLEOTIDES, k=int(num_bases)))
-        # Raw current is modelled as Gaussian noise; amplitude varies per base
-        signal_len = int(num_bases) * SAMPLES_PER_BASE
-        signal = rng.normal(loc=0.0, scale=1.0, size=signal_len).astype(np.float32)
-        signals.append(signal)
-        sequences.append(seq)
-
-    print(
-        f"Generated {num_samples} synthetic samples "
-        f"(sequence length {min_bases}–{max_bases} nt)."
-    )
-    return signals, sequences
+TRAIN_SPLIT_RATIO: float = 0.9
 
 
 # ---------------------------------------------------------------------------
@@ -116,22 +64,46 @@ def _compute_metrics_for_trainer(eval_pred: EvalPrediction) -> Dict[str, float]:
 
 
 def main() -> None:
-    """Run the full training pipeline on synthetic dummy data."""
+    """Run the full training pipeline on real Bonito-preprocessed data."""
+    parser = argparse.ArgumentParser(
+        description="Train the Nanopore DNA Sequencing Basecaller."
+    )
+    parser.add_argument(
+        "--chunks",
+        required=True,
+        help="Path to chunks.npy (Bonito signal chunks).",
+    )
+    parser.add_argument(
+        "--refs",
+        required=True,
+        help="Path to references.npy (Bonito integer-encoded references).",
+    )
+    parser.add_argument(
+        "--ref_lens",
+        required=True,
+        help="Path to reference_lengths.npy (valid length per reference).",
+    )
+    args = parser.parse_args()
+
     print("=" * 60)
     print("Nanopore DNA Sequencing Basecaller — Training")
     print("=" * 60)
 
     # ------------------------------------------------------------------
-    # 1. Generate data
+    # 1. Load data
     # ------------------------------------------------------------------
-    signals, sequences = generate_dummy_data(num_samples=64)
+    signals, labels = load_bonito_npy_data(
+        chunks_path=args.chunks,
+        refs_path=args.refs,
+        ref_lens_path=args.ref_lens,
+    )
 
-    split = int(0.8 * len(signals))
+    split = int(TRAIN_SPLIT_RATIO * len(signals))
     train_signals, eval_signals = signals[:split], signals[split:]
-    train_seqs, eval_seqs = sequences[:split], sequences[split:]
+    train_labels, eval_labels = labels[:split], labels[split:]
 
-    train_dataset = NanoporeDataset(train_signals, train_seqs)
-    eval_dataset = NanoporeDataset(eval_signals, eval_seqs)
+    train_dataset = NanoporeDataset(train_signals, train_labels)
+    eval_dataset = NanoporeDataset(eval_signals, eval_labels)
 
     print(f"Train: {len(train_dataset)} samples | Eval: {len(eval_dataset)} samples")
 

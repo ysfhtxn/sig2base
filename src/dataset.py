@@ -55,14 +55,19 @@ class NanoporeDataset(Dataset):
 
     Args:
         signals: List of 1-D NumPy arrays, one per read.
-        sequences: List of DNA strings (e.g. ``"ACGT"``), one per read.
+        sequences: Either a list of DNA strings (e.g. ``"ACGT"``), one per
+            read, or a list of pre-encoded integer lists whose values already
+            correspond to VOCAB token IDs (e.g. from
+            :func:`~data_loader.load_bonito_npy_data`).  When integers are
+            provided the ``vocab`` mapping is not consulted.
         vocab: Mapping from token string to integer ID (defaults to VOCAB).
+            Ignored when ``sequences`` contains pre-encoded integer lists.
     """
 
     def __init__(
         self,
         signals: List[np.ndarray],
-        sequences: List[str],
+        sequences: Union[List[str], List[List[int]]],
         vocab: Optional[Dict[str, int]] = None,
     ) -> None:
         if len(signals) != len(sequences):
@@ -75,6 +80,12 @@ class NanoporeDataset(Dataset):
         self.vocab: Dict[str, int] = vocab if vocab is not None else VOCAB
         unk_id: int = self.vocab.get("<unk>", 3)
         self._unk_id = unk_id
+
+        # Detect whether sequences are pre-encoded (list of ints) or raw
+        # DNA strings so that __getitem__ can choose the right path.
+        self._pre_encoded: bool = bool(
+            sequences and not isinstance(sequences[0], str)
+        )
 
     def __len__(self) -> int:
         return len(self.signals)
@@ -92,9 +103,12 @@ class NanoporeDataset(Dataset):
         signal: np.ndarray = normalize_signal(self.signals[idx])
         input_values: torch.Tensor = torch.tensor(signal, dtype=torch.float32)
 
-        label_ids: List[int] = [
-            self.vocab.get(ch, self._unk_id) for ch in self.sequences[idx]
-        ]
+        if self._pre_encoded:
+            label_ids: List[int] = list(self.sequences[idx])
+        else:
+            label_ids = [
+                self.vocab.get(ch, self._unk_id) for ch in self.sequences[idx]
+            ]
         labels: torch.Tensor = torch.tensor(label_ids, dtype=torch.long)
 
         return {"input_values": input_values, "labels": labels}
