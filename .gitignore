@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# lora_adapter
+nanopore_lora_adapter/

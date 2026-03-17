@@ -2,7 +2,10 @@
 
 Usage
 -----
-    python -m src.train --chunks chunks.npy --refs references.npy --ref_lens reference_lengths.npy
+    python -m src.train --chunks chunks.npy --refs references.npy --ref_lens reference_lengths.npy \
+        --train_batch_size 4 --eval_batch_size 4 --num_train_epochs 3 \
+        --learning_rate 3e-4 --warmup_ratio 0.1 --weight_decay 0.01 \
+        --logging_steps 5 --eval_strategy epoch --save_strategy epoch
 
 The script loads real Nanopore data pre-processed by Bonito, builds the
 LoRA-augmented Wav2Vec2ForCTC model, and runs a training loop via the
@@ -83,6 +86,74 @@ def main() -> None:
         required=True,
         help="Path to reference_lengths.npy (valid length per reference).",
     )
+    parser.add_argument(
+        "--output_dir",
+        default=OUTPUT_DIR,
+        help="Output directory for checkpoints and adapter (default: ./nanopore_lora_adapter).",
+    )
+    parser.add_argument(
+        "--num_train_epochs",
+        type=int,
+        default=3,
+        help="Number of training epochs (default: 3).",
+    )
+    parser.add_argument(
+        "--train_batch_size",
+        type=int,
+        default=4,
+        help="Per-device train batch size (default: 4).",
+    )
+    parser.add_argument(
+        "--eval_batch_size",
+        type=int,
+        default=4,
+        help="Per-device eval batch size (default: 4).",
+    )
+    parser.add_argument(
+        "--learning_rate",
+        type=float,
+        default=3e-4,
+        help="Learning rate (default: 3e-4).",
+    )
+    parser.add_argument(
+        "--warmup_ratio",
+        type=float,
+        default=0.1,
+        help="Warmup ratio (default: 0.1).",
+    )
+    parser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=0.01,
+        help="Weight decay (default: 0.01).",
+    )
+    parser.add_argument(
+        "--logging_steps",
+        type=int,
+        default=5,
+        help="Logging steps (default: 5).",
+    )
+    parser.add_argument(
+        "--eval_strategy",
+        default="epoch",
+        help="Evaluation strategy (default: epoch).",
+    )
+    parser.add_argument(
+        "--save_strategy",
+        default="epoch",
+        help="Save strategy (default: epoch).",
+    )
+    parser.add_argument(
+        "--dataloader_num_workers",
+        type=int,
+        default=0,
+        help="DataLoader worker count (default: 0).",
+    )
+    parser.add_argument(
+        "--no_fp16",
+        action="store_true",
+        help="Disable fp16 even if CUDA is available.",
+    )
     args = parser.parse_args()
 
     print("=" * 60)
@@ -107,45 +178,33 @@ def main() -> None:
 
     print(f"Train: {len(train_dataset)} samples | Eval: {len(eval_dataset)} samples")
 
-    # ------------------------------------------------------------------
-    # 2. Build model
-    # ------------------------------------------------------------------
     model = get_nanopore_lora_model()
 
-    # ------------------------------------------------------------------
-    # 3. Data collator
-    # ------------------------------------------------------------------
     collator = DataCollatorCTCWithPadding()
 
-    # ------------------------------------------------------------------
-    # 4. Training arguments
-    # ------------------------------------------------------------------
-    use_fp16 = torch.cuda.is_available()
+    use_fp16 = torch.cuda.is_available() and not args.no_fp16
 
     training_args = TrainingArguments(
-        output_dir=OUTPUT_DIR,
-        num_train_epochs=3,
-        per_device_train_batch_size=4,
-        per_device_eval_batch_size=4,
-        learning_rate=3e-4,
-        warmup_ratio=0.1,
-        weight_decay=0.01,
+        output_dir=args.output_dir,
+        num_train_epochs=args.num_train_epochs,
+        per_device_train_batch_size=args.train_batch_size,
+        per_device_eval_batch_size=args.eval_batch_size,
+        learning_rate=args.learning_rate,
+        warmup_ratio=args.warmup_ratio,
+        weight_decay=args.weight_decay,
         fp16=use_fp16,
-        logging_steps=5,
-        eval_strategy="epoch",
-        save_strategy="epoch",
+        logging_steps=args.logging_steps,
+        eval_strategy=args.eval_strategy,
+        save_strategy=args.save_strategy,
         load_best_model_at_end=True,
         metric_for_best_model="cer",
         greater_is_better=False,
         report_to="none",
-        dataloader_num_workers=0,
+        dataloader_num_workers=args.dataloader_num_workers,
     )
 
     print(f"fp16 training: {use_fp16}")
 
-    # ------------------------------------------------------------------
-    # 5. Trainer
-    # ------------------------------------------------------------------
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -155,17 +214,11 @@ def main() -> None:
         compute_metrics=_compute_metrics_for_trainer,
     )
 
-    # ------------------------------------------------------------------
-    # 6. Train
-    # ------------------------------------------------------------------
     print("Starting training …")
     trainer.train()
 
-    # ------------------------------------------------------------------
-    # 7. Save PEFT adapter
-    # ------------------------------------------------------------------
-    print(f"Saving PEFT adapter to '{OUTPUT_DIR}' …")
-    model.save_pretrained(OUTPUT_DIR)
+    print(f"Saving PEFT adapter to '{args.output_dir}' …")
+    model.save_pretrained(args.output_dir)
     print("Done. Training complete.")
 
 
