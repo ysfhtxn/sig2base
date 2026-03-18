@@ -36,8 +36,8 @@ def main() -> None:
     inf_parser.add_argument(
         "--pretrained_model",
         type=str,
-        default="facebook/wav2vec2-base",
-        help="HuggingFace model id or local path used during training (default: facebook/wav2vec2-base).",
+        default="facebook/wav2vec2-base-960h",
+        help="HuggingFace model id or local path used during training (default: facebook/wav2vec2-base-960h).",
     )
 
     args = parser.parse_args()

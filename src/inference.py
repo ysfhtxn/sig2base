@@ -3,7 +3,7 @@
 Usage
 -----
     python -m src.inference [--adapter_path ./nanopore_lora_adapter]
-                            [--pretrained_model facebook/wav2vec2-base]
+                            [--pretrained_model facebook/wav2vec2-base-960h]
 
 The script:
 1. Re-creates the Nanopore-adapted ``Wav2Vec2ForCTC`` base architecture via
@@ -37,7 +37,7 @@ from .utils import decode_ctc
 # ---------------------------------------------------------------------------
 
 DEFAULT_ADAPTER_PATH: str = "./nanopore_lora_adapter"
-DEFAULT_PRETRAINED_MODEL: str = "facebook/wav2vec2-base"
+DEFAULT_PRETRAINED_MODEL: str = "facebook/wav2vec2-base-960h"
 SAMPLE_RATE: int = 4_000        # Hz
 DUMMY_SIGNAL_SECONDS: float = 0.5  # seconds of synthetic signal
 
@@ -63,7 +63,7 @@ def load_merged_model(
             that contains the LoRA adapter config and weights.
         pretrained_model_name: HuggingFace model id or local path of the
             pre-trained Wav2Vec2 checkpoint.  Must match the one used during
-            training (default: ``"facebook/wav2vec2-base"``).
+            training (default: ``"facebook/wav2vec2-base-960h"``).
 
     Returns:
         Plain ``Wav2Vec2ForCTC`` with all adapter and CNN weights merged into
@@ -168,7 +168,7 @@ if __name__ == "__main__":
         "--pretrained_model",
         type=str,
         default=DEFAULT_PRETRAINED_MODEL,
-        help="HuggingFace model id or local path used during training (default: facebook/wav2vec2-base).",
+        help="HuggingFace model id or local path used during training (default: facebook/wav2vec2-base-960h).",
     )
     args = parser.parse_args()
     main(adapter_path=args.adapter_path, pretrained_model_name=args.pretrained_model)

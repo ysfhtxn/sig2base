@@ -35,7 +35,7 @@ BLANK_TOKEN_ID: int = 8      # index of <blank> in VOCAB
 
 
 def build_nanopore_base_model(
-    pretrained_model_name: str = "facebook/wav2vec2-base",
+    pretrained_model_name: str = "facebook/wav2vec2-base-960h",
 ) -> Wav2Vec2ForCTC:
     """Build the Nanopore-adapted base ``Wav2Vec2ForCTC`` from a pre-trained checkpoint.
 
@@ -57,7 +57,8 @@ def build_nanopore_base_model(
 
     Args:
         pretrained_model_name: HuggingFace model id or local path of the
-            pre-trained Wav2Vec2 checkpoint (default: ``"facebook/wav2vec2-base"``).
+            pre-trained Wav2Vec2 checkpoint
+            (default: ``"facebook/wav2vec2-base-960h"``).
 
     Returns:
         A ``Wav2Vec2ForCTC`` instance with pre-trained Transformer weights and

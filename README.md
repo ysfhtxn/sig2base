@@ -1,7 +1,7 @@
 # sig2base — Nanopore DNA Sequencing Basecaller
 
 A parameter-efficient Nanopore basecaller built on top of Facebook's
-[wav2vec2-base](https://huggingface.co/facebook/wav2vec2-base) using
+[wav2vec2-base-960h](https://huggingface.co/facebook/wav2vec2-base-960h) using
 [LoRA](https://arxiv.org/abs/2106.09685) (Low-Rank Adaptation) via the
 🤗 PEFT library.
 
@@ -11,8 +11,8 @@ A parameter-efficient Nanopore basecaller built on top of Facebook's
 
 | Component | Details |
 |---|---|
-| **Base model** | `facebook/wav2vec2-base` (pre-trained Transformer, weights frozen) |
-| **LoRA adapters** | Rank-8 adapters on `q_proj` / `v_proj` in all Transformer layers |
+| **Base model** | `facebook/wav2vec2-base-960h` (pre-trained Transformer, weights frozen) |
+| **LoRA adapters** | Rank-16 adapters on all attention projections and feed-forward layers in all Transformer layers |
 | **CNN feature extractor** | 3-layer stack with strides `(5, 2, 1)` → ~10× downsample, trained from scratch |
 | **Classification head** | Linear `lm_head` over a 9-token DNA vocabulary, trained from scratch |
 | **Vocabulary** | `<pad>`, `<s>`, `</s>`, `<unk>`, `A`, `C`, `G`, `T`, `<blank>` |
@@ -89,7 +89,7 @@ to `--output_dir`.
 ```bash
 python -m src.inference \
     --adapter_path  ./nanopore_lora_adapter \
-    --pretrained_model facebook/wav2vec2-base
+    --pretrained_model facebook/wav2vec2-base-960h
 ```
 
 Or via the top-level entry-point:
@@ -97,7 +97,7 @@ Or via the top-level entry-point:
 ```bash
 python main.py inference \
     --adapter_path ./nanopore_lora_adapter \
-    --pretrained_model facebook/wav2vec2-base
+    --pretrained_model facebook/wav2vec2-base-960h
 ```
 
 `--pretrained_model` must match the checkpoint used during training.
@@ -112,14 +112,14 @@ from src.inference import load_merged_model, basecall
 import numpy as np
 
 # --- Training ---
-peft_model = get_nanopore_lora_model("facebook/wav2vec2-base")
+peft_model = get_nanopore_lora_model("facebook/wav2vec2-base-960h")
 # ... train with HuggingFace Trainer ...
 peft_model.save_pretrained("./nanopore_lora_adapter")
 
 # --- Inference ---
 model = load_merged_model(
     "./nanopore_lora_adapter",
-    pretrained_model_name="facebook/wav2vec2-base",  # must match training
+    pretrained_model_name="facebook/wav2vec2-base-960h",  # must match training
 )
 signal = np.random.randn(4000).astype("float32")   # 1 s @ 4 kHz
 sequence = basecall(model, signal)
