@@ -3,10 +3,15 @@
 Usage
 -----
     python -m src.inference [--adapter_path ./nanopore_lora_adapter]
+                            [--pretrained_model facebook/wav2vec2-base]
 
 The script:
-1. Re-creates the base Wav2Vec2ForCTC architecture.
-2. Loads the saved LoRA adapter weights via ``PeftModel.from_pretrained``.
+1. Re-creates the Nanopore-adapted ``Wav2Vec2ForCTC`` base architecture via
+   :func:`~model.build_nanopore_base_model` (the same function used during
+   training) so the architecture is guaranteed to match.
+2. Loads the saved LoRA adapter weights via ``PeftModel.from_pretrained``;
+   the CNN and ``lm_head`` weights that were listed in ``modules_to_save``
+   during training are automatically restored from the adapter checkpoint.
 3. Merges adapter weights into the base model (``merge_and_unload``) for
    fast, dependency-free inference.
 4. Normalises a dummy 1-D Nanopore signal, runs greedy CTC decoding, and
@@ -21,10 +26,10 @@ import os
 import numpy as np
 import torch
 from peft import PeftModel
-from transformers import Wav2Vec2Config, Wav2Vec2ForCTC
+from transformers import Wav2Vec2ForCTC
 
 from .dataset import normalize_signal
-from .model import BLANK_TOKEN_ID, VOCAB_SIZE
+from .model import build_nanopore_base_model
 from .utils import decode_ctc
 
 # ---------------------------------------------------------------------------
@@ -32,6 +37,7 @@ from .utils import decode_ctc
 # ---------------------------------------------------------------------------
 
 DEFAULT_ADAPTER_PATH: str = "./nanopore_lora_adapter"
+DEFAULT_PRETRAINED_MODEL: str = "facebook/wav2vec2-base"
 SAMPLE_RATE: int = 4_000        # Hz
 DUMMY_SIGNAL_SECONDS: float = 0.5  # seconds of synthetic signal
 
@@ -41,43 +47,36 @@ DUMMY_SIGNAL_SECONDS: float = 0.5  # seconds of synthetic signal
 # ---------------------------------------------------------------------------
 
 
-def load_merged_model(adapter_path: str) -> Wav2Vec2ForCTC:
+def load_merged_model(
+    adapter_path: str,
+    pretrained_model_name: str = DEFAULT_PRETRAINED_MODEL,
+) -> Wav2Vec2ForCTC:
     """Load and merge a LoRA-adapted Wav2Vec2ForCTC for efficient inference.
 
+    Uses :func:`~model.build_nanopore_base_model` to reconstruct the exact
+    same base architecture that was used during training, then loads the
+    saved LoRA adapter (which also contains the trained CNN and ``lm_head``
+    weights stored via ``modules_to_save``).
+
     Args:
-        adapter_path: Directory produced by ``model.save_pretrained()`` that
-            contains the LoRA adapter config and weights.
+        adapter_path: Directory produced by ``peft_model.save_pretrained()``
+            that contains the LoRA adapter config and weights.
+        pretrained_model_name: HuggingFace model id or local path of the
+            pre-trained Wav2Vec2 checkpoint.  Must match the one used during
+            training (default: ``"facebook/wav2vec2-base"``).
 
     Returns:
-        Plain ``Wav2Vec2ForCTC`` with adapter weights merged into base
-        parameters (no PEFT dependency at runtime).
+        Plain ``Wav2Vec2ForCTC`` with all adapter and CNN weights merged into
+        the base parameters (no PEFT dependency at runtime).
     """
     print(f"Loading LoRA adapter from '{adapter_path}' …")
 
-    # Reconstruct the same base config used during training
-    base_config = Wav2Vec2Config(
-        vocab_size=VOCAB_SIZE,
-        hidden_size=512,
-        num_hidden_layers=6,
-        num_attention_heads=8,
-        intermediate_size=2048,
-        conv_dim=(512, 512, 512, 512, 512, 512, 512),
-        conv_stride=(5, 2, 1, 1, 1, 1, 1),
-        conv_kernel=(10, 3, 3, 3, 3, 2, 2),
-        feat_extract_norm="group",
-        feat_extract_activation="gelu",
-        feat_proj_dropout=0.0,
-        hidden_dropout=0.1,
-        attention_dropout=0.1,
-        final_dropout=0.1,
-        ctc_loss_reduction="mean",
-        ctc_zero_infinity=True,
-        pad_token_id=0,
-    )
+    # Reconstruct the exact same base model used during training.
+    base_model = build_nanopore_base_model(pretrained_model_name)
 
-    base_model = Wav2Vec2ForCTC(base_config)
-
-    # Load LoRA adapter and merge
+    # Load LoRA adapter weights.  The saved checkpoint also contains the
+    # trained CNN (feature_extractor / feature_projection) and lm_head
+    # weights because those modules were listed in modules_to_save.
     peft_model: PeftModel = PeftModel.from_pretrained(base_model, adapter_path)
     print("Merging LoRA weights into base model …")
     merged_model: Wav2Vec2ForCTC = peft_model.merge_and_unload()
@@ -122,11 +121,16 @@ def basecall(model: Wav2Vec2ForCTC, signal: np.ndarray) -> str:
 # ---------------------------------------------------------------------------
 
 
-def main(adapter_path: str = DEFAULT_ADAPTER_PATH) -> None:
+def main(
+    adapter_path: str = DEFAULT_ADAPTER_PATH,
+    pretrained_model_name: str = DEFAULT_PRETRAINED_MODEL,
+) -> None:
     """Load the trained model and basecall a dummy signal.
 
     Args:
         adapter_path: Path to the saved PEFT adapter directory.
+        pretrained_model_name: HuggingFace model id or local path of the
+            pre-trained Wav2Vec2 checkpoint used during training.
     """
     print("=" * 60)
     print("Nanopore DNA Sequencing Basecaller — Inference")
@@ -138,7 +142,7 @@ def main(adapter_path: str = DEFAULT_ADAPTER_PATH) -> None:
             "Run src/train.py first to produce the saved adapter."
         )
 
-    model = load_merged_model(adapter_path)
+    model = load_merged_model(adapter_path, pretrained_model_name)
 
     # Create a dummy 0.5-second signal (2 000 samples at 4 000 Hz)
     rng = np.random.default_rng(0)
@@ -160,5 +164,11 @@ if __name__ == "__main__":
         default=DEFAULT_ADAPTER_PATH,
         help="Path to the saved PEFT LoRA adapter directory.",
     )
+    parser.add_argument(
+        "--pretrained_model",
+        type=str,
+        default=DEFAULT_PRETRAINED_MODEL,
+        help="HuggingFace model id or local path used during training (default: facebook/wav2vec2-base).",
+    )
     args = parser.parse_args()
-    main(adapter_path=args.adapter_path)
+    main(adapter_path=args.adapter_path, pretrained_model_name=args.pretrained_model)
