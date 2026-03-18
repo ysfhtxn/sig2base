@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
@@ -59,6 +59,147 @@ def _compute_metrics_for_trainer(eval_pred: EvalPrediction) -> Dict[str, float]:
     label_ids_list: List[List[int]] = label_ids.tolist()
 
     return compute_metrics(pred_ids, label_ids_list)
+
+
+def _print_ctc_length_diagnostics(
+    model: torch.nn.Module,
+    signals: List[np.ndarray],
+    labels: List[List[int]],
+    split: int,
+    max_samples: int = 512,
+) -> Tuple[int, int]:
+    """Print CTC alignment diagnostics before training starts.
+
+    A CTC sample is invalid when the encoder output length is shorter than the
+    target label length, i.e. ``T_out < U``. When ``ctc_zero_infinity=True``,
+    those invalid samples can silently contribute zero loss.
+
+    Returns:
+        ``(n_invalid_train, n_invalid_eval)``.
+    """
+    # PEFT wrapper -> recover underlying Wav2Vec2ForCTC model.
+    base_model = model.get_base_model() if hasattr(model, "get_base_model") else model
+
+    if not hasattr(base_model, "_get_feat_extract_output_lengths"):
+        print("[CTC-DIAG] Skipped: model has no _get_feat_extract_output_lengths().")
+        return 0, 0
+
+    def _diag_one_split(name: str, split_signals: List[np.ndarray], split_labels: List[List[int]]) -> int:
+        n = min(max_samples, len(split_signals))
+        if n == 0:
+            print(f"[CTC-DIAG] {name}: empty split.")
+            return 0
+
+        input_lens = torch.tensor(
+            [int(split_signals[i].shape[0]) for i in range(n)],
+            dtype=torch.long,
+        )
+        target_lens = torch.tensor(
+            [len(split_labels[i]) for i in range(n)],
+            dtype=torch.long,
+        )
+
+        output_lens = base_model._get_feat_extract_output_lengths(input_lens).cpu()
+        invalid_mask = output_lens < target_lens
+        n_invalid = int(invalid_mask.sum().item())
+
+        print(f"[CTC-DIAG] {name}: checked={n}, invalid(T_out<U)={n_invalid} ({n_invalid / n:.2%})")
+        print(
+            "[CTC-DIAG] "
+            f"{name} lens stats: "
+            f"input[min/med/max]={int(input_lens.min())}/{int(input_lens.median())}/{int(input_lens.max())}, "
+            f"output[min/med/max]={int(output_lens.min())}/{int(output_lens.median())}/{int(output_lens.max())}, "
+            f"target[min/med/max]={int(target_lens.min())}/{int(target_lens.median())}/{int(target_lens.max())}"
+        )
+
+        if n_invalid > 0:
+            bad_idx = torch.nonzero(invalid_mask, as_tuple=False).squeeze(-1)[:5].tolist()
+            examples = [
+                (
+                    int(input_lens[i].item()),
+                    int(output_lens[i].item()),
+                    int(target_lens[i].item()),
+                )
+                for i in bad_idx
+            ]
+            print(f"[CTC-DIAG] {name} bad examples (input, output, target): {examples}")
+
+        return n_invalid
+
+    train_invalid = _diag_one_split("train", signals[:split], labels[:split])
+    eval_invalid = _diag_one_split("eval", signals[split:], labels[split:])
+    return train_invalid, eval_invalid
+
+
+def _run_forward_sanity_check(
+    model: torch.nn.Module,
+    dataset: NanoporeDataset,
+    collator: DataCollatorCTCWithPadding,
+    max_items: int = 8,
+) -> None:
+    """Run one small forward pass and report numerical health.
+
+    This catches issues that are often masked during Trainer logging
+    (e.g. NaN/Inf loss filtered into 0.0 by ``logging_nan_inf_filter``).
+    """
+    n = min(max_items, len(dataset))
+    if n == 0:
+        print("[NUM-DIAG] skipped: empty training dataset.")
+        return
+
+    features = [dataset[i] for i in range(n)]
+    batch = collator(features)
+
+    input_values = batch["input_values"]
+    labels = batch["labels"]
+
+    input_is_finite = torch.isfinite(input_values).all().item()
+    valid_labels = labels[labels != -100]
+    if valid_labels.numel() > 0:
+        label_min = int(valid_labels.min().item())
+        label_max = int(valid_labels.max().item())
+    else:
+        label_min = -1
+        label_max = -1
+
+    print(
+        "[NUM-DIAG] batch stats: "
+        f"shape(input)={tuple(input_values.shape)}, "
+        f"shape(labels)={tuple(labels.shape)}, "
+        f"input_finite={bool(input_is_finite)}, "
+        f"valid_label_range=[{label_min}, {label_max}]"
+    )
+
+    device = next(model.parameters()).device
+    model_was_training = model.training
+    model.eval()
+    with torch.no_grad():
+        outputs = model(
+            input_values=input_values.to(device),
+            labels=labels.to(device),
+        )
+    if model_was_training:
+        model.train()
+
+    loss = outputs.loss
+    logits = outputs.logits
+    loss_finite = torch.isfinite(loss).item()
+    logits_finite_ratio = float(torch.isfinite(logits).float().mean().item())
+
+    print(
+        "[NUM-DIAG] forward stats: "
+        f"loss={float(loss.detach().cpu()):.6f}, "
+        f"loss_finite={bool(loss_finite)}, "
+        f"logits_finite_ratio={logits_finite_ratio:.6f}"
+    )
+
+    if not loss_finite or logits_finite_ratio < 1.0 or not input_is_finite:
+        raise ValueError(
+            "Numerical sanity check failed before training: "
+            "non-finite input/loss/logits detected. "
+            "Try --no_fp16, lower --learning_rate (e.g. 3e-5), "
+            "and check raw chunks for NaN/Inf."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +297,27 @@ def main() -> None:
         action="store_true",
         help="Print model architecture and exit without training.",
     )
+    parser.add_argument(
+        "--strict_ctc_lengths",
+        action="store_true",
+        help=(
+            "Abort training if any sampled item violates CTC length condition "
+            "(encoder output length < target length)."
+        ),
+    )
+    parser.add_argument(
+        "--skip_forward_sanity_check",
+        action="store_true",
+        help="Skip one-batch numerical forward sanity check before Trainer.train().",
+    )
+    parser.add_argument(
+        "--logging_nan_inf_filter",
+        action="store_true",
+        help=(
+            "Enable Trainer NaN/Inf logging filter. Disabled by default to avoid "
+            "masking numerical issues as 0.0 loss."
+        ),
+    )
     args = parser.parse_args()
 
     if not args.print_model:
@@ -228,9 +390,33 @@ def main() -> None:
 
     model = get_nanopore_lora_model()
 
+    train_invalid, eval_invalid = _print_ctc_length_diagnostics(
+        model=model,
+        signals=signals,
+        labels=labels,
+        split=split,
+    )
+    if args.strict_ctc_lengths and (train_invalid > 0 or eval_invalid > 0):
+        raise ValueError(
+            "CTC length diagnostics found invalid samples (T_out < target_len). "
+            "Please reduce downsampling or increase chunk length before training."
+        )
+
     collator = DataCollatorCTCWithPadding()
 
+    if not args.skip_forward_sanity_check:
+        _run_forward_sanity_check(
+            model=model,
+            dataset=train_dataset,
+            collator=collator,
+        )
+
     use_fp16 = torch.cuda.is_available() and not args.no_fp16
+    if use_fp16 and args.learning_rate >= 1e-4:
+        print(
+            "[Warning] fp16 + relatively high learning rate may cause overflow. "
+            "If loss/grad becomes NaN, retry with --no_fp16 and/or lower --learning_rate."
+        )
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -249,9 +435,11 @@ def main() -> None:
         greater_is_better=False,
         report_to="none",
         dataloader_num_workers=args.dataloader_num_workers,
+        logging_nan_inf_filter=args.logging_nan_inf_filter,
     )
 
     print(f"fp16 training: {use_fp16}")
+    print(f"logging_nan_inf_filter: {args.logging_nan_inf_filter}")
 
     trainer = Trainer(
         model=model,

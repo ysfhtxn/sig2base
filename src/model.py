@@ -68,7 +68,7 @@ def build_nanopore_base_model(
 
     # Overwrite vocabulary
     config.vocab_size = VOCAB_SIZE
-    config.pad_token_id = 0
+    config.pad_token_id = BLANK_TOKEN_ID
     config.ctc_loss_reduction = "mean"
     config.ctc_zero_infinity = True
 
@@ -77,10 +77,15 @@ def build_nanopore_base_model(
     # for DNA signals.  At a 4 kHz Nanopore sample rate and a median base
     # dwell of ~4–10 samples per base, a ~10x downsample yields roughly one
     # output frame per base, matching the CTC alignment requirements.
+    
     config.conv_dim = (512, 512, 512)
     config.conv_stride = (5, 2, 1)
     config.conv_kernel = (10, 3, 3)
     config.num_feat_extract_layers = len(config.conv_dim)
+    # config.conv_dim = (64, 64, 128, 128, 256, 256, 512)
+    # config.conv_stride = (1, 1, 3, 3, 2, 2, 2)
+    # config.conv_kernel = (5, 5, 5, 5, 5, 5, 5)
+    # config.num_feat_extract_layers = len(config.conv_dim)
 
     print(f"Loading pre-trained weights from {pretrained_model_name}...")
     # ignore_mismatched_sizes=True loads matching Transformer weights and
@@ -99,7 +104,7 @@ def build_nanopore_base_model(
 
 
 def get_nanopore_lora_model(
-    pretrained_model_name: str = "facebook/wav2vec2-base",
+    pretrained_model_name: str = "facebook/wav2vec2-base-960h",
 ) -> "PeftModel":
     """Build a LoRA-wrapped ``Wav2Vec2ForCTC`` for Nanopore basecalling.
 
@@ -118,15 +123,24 @@ def get_nanopore_lora_model(
         A PEFT-wrapped model ready for fine-tuning.
     """
     model = build_nanopore_base_model(pretrained_model_name)
-
+    target_modules = []
+    for i in range(12):
+        target_modules.extend([
+            f"wav2vec2.encoder.layers.{i}.attention.k_proj",
+            f"wav2vec2.encoder.layers.{i}.attention.v_proj",
+            f"wav2vec2.encoder.layers.{i}.attention.q_proj",
+            f"wav2vec2.encoder.layers.{i}.attention.out_proj",
+            f"wav2vec2.encoder.layers.{i}.feed_forward.intermediate_dense",
+            f"wav2vec2.encoder.layers.{i}.feed_forward.output_dense",
+        ])
     # ------------------------------------------------------------------
     # Define and inject LoRA
     # ------------------------------------------------------------------
     lora_config = LoraConfig(
         task_type=TaskType.FEATURE_EXTRACTION,
-        r=8,
+        r=16,
         lora_alpha=32,
-        target_modules=["q_proj", "v_proj"],
+        target_modules=target_modules,
         lora_dropout=0.05,
         bias="none",
         # lm_head is newly initialized → must be fully trained and saved.
