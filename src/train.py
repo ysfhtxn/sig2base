@@ -179,12 +179,14 @@ def main() -> None:
 
     if args.print_model:
         model = get_nanopore_lora_model()
-        
+        model.eval() # 设置为评估模式，确保 Dropout 等行为一致
+
+               
         try:
             from torchinfo import summary
             print("\n" + "="*30 + " MODEL SUMMARY " + "="*30)
             
-            dummy_input = torch.randn(4, 10000, dtype=torch.float32, device=model.device)
+            dummy_input = torch.randn(1, 10000, dtype=torch.float32, device=model.device)
             
             summary(
                 model,
