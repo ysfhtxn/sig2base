@@ -4,7 +4,7 @@ Run training:
     python main.py train
 
 Run inference (requires a pre-trained adapter):
-    python main.py inference [--adapter_path PATH]
+    python main.py inference [--adapter_path PATH] [--pretrained_model MODEL]
 """
 
 from __future__ import annotations
@@ -33,6 +33,12 @@ def main() -> None:
         default="./nanopore_lora_adapter",
         help="Path to saved PEFT LoRA adapter (default: ./nanopore_lora_adapter).",
     )
+    inf_parser.add_argument(
+        "--pretrained_model",
+        type=str,
+        default="facebook/wav2vec2-base",
+        help="HuggingFace model id or local path used during training (default: facebook/wav2vec2-base).",
+    )
 
     args = parser.parse_args()
 
@@ -41,7 +47,10 @@ def main() -> None:
         train_main()
     elif args.command == "inference":
         from src.inference import main as inference_main
-        inference_main(adapter_path=args.adapter_path)
+        inference_main(
+            adapter_path=args.adapter_path,
+            pretrained_model_name=args.pretrained_model,
+        )
     else:
         parser.print_help()
         sys.exit(1)
